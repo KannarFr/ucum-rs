@@ -86,6 +86,8 @@ pub enum ErrorKind {
     InvalidPercentPlacement { position: usize },
     /// Special unit handling error
     SpecialUnitError { unit: String, reason: String },
+    /// Division by a zero factor (e.g. `m/0`)
+    DivisionByZero,
 }
 
 /// Enhanced UCUM error with detailed context and suggestions
@@ -231,6 +233,11 @@ impl UcumError {
             ErrorKind::InvalidPercentPlacement { position },
             format!("Invalid percent placement at position {position}"),
         )
+    }
+
+    /// Create a division by zero error
+    pub fn division_by_zero() -> Self {
+        Self::new(ErrorKind::DivisionByZero, "Division by zero".to_string())
     }
 
     /// Create a special unit error

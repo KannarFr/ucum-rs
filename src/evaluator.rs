@@ -599,6 +599,10 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
                 }
             }
 
+            if d.factor == Number::zero() {
+                return Err(UcumError::division_by_zero());
+            }
+
             Ok(EvalResult {
                 factor: n.factor.div(d.factor),
                 dim: Dimension(dim_vec),
