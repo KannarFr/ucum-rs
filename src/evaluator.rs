@@ -634,34 +634,17 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
 }
 
 /// Attempt to split the leading prefix from a symbol.
-/// Returns (prefix, remainder) if a valid prefix is found.
-/// Optimized version with fast path for single-character prefixes.
+/// Returns (prefix, remainder) if the symbol is a valid prefix followed by a unit code.
 fn split_prefix(code: &str) -> Option<(crate::types::Prefix, &str)> {
-    if code.len() < 2 {
-        return None;
-    }
-
-    // Fast path: try single-character prefix first (most common case)
-    // This covers k, m, c, d, n, p, f, a, z, y, E, P, T, G, M, etc.
-    // `get` rather than indexing: the offset may fall inside a multi-byte character
-    if let Some(prefix) = code.get(..1).and_then(find_prefix_optimized) {
-        let remainder = &code[1..];
-        if !remainder.is_empty() {
-            return Some((*prefix, remainder));
-        }
-    }
-
-    // Slower path: try 2-3 character prefixes
-    // This handles cases like "da" (deca), "Ki" (kibi), etc.
-    for len in (2..=3).rev() {
-        if let Some(prefix) = code.get(..len).and_then(find_prefix_optimized) {
-            let remainder = &code[len..];
-            if !remainder.is_empty() {
-                return Some((*prefix, remainder));
-            }
-        }
-    }
-    None
+    // Prefix symbols are 1 or 2 characters long ("k", "da", "Ki", ...). The remainder must be
+    // a unit code of its own: "dam" is deca + "m", not deci + "am", and "MiBy" is mebi + "By".
+    (1..=2).find_map(|len| {
+        // `split_at_checked`: the offset may fall inside a multi-byte character
+        let (prefix, remainder) = code.split_at_checked(len)?;
+        let prefix = find_prefix_optimized(prefix)?;
+        let unit = find_unit(remainder)?;
+        (unit.code == remainder).then_some((*prefix, remainder))
+    })
 }
 
 /// Internal implementation of evaluate for owned AST
