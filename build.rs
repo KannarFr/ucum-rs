@@ -977,7 +977,7 @@ fn parse_dim(tag: &str) -> [i8; 7] {
             'I' => v[3] = 1,
             'C' | 'θ' | 'Θ' => v[4] = 1, // temperature
             'N' => v[5] = 1,
-            'J' => v[6] = 1,
+            'J' | 'F' => v[6] = 1, // luminous intensity (UCUM writes it `F`)
             'Q' => {
                 // Charge dimension: time × current
                 v[2] = 1; // time
