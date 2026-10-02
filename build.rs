@@ -1,4 +1,4 @@
-use std::{env, fs, path::PathBuf};
+use std::{collections::HashMap, env, fs, path::PathBuf};
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
@@ -97,6 +97,9 @@ fn main() {
         Option<String>,
     )> = Vec::new();
 
+    // Definition of each regular unit: its `value` and the `Unit` expression it multiplies
+    let mut definitions: HashMap<String, Definition> = HashMap::new();
+
     // reuse reader on xml_data
     let mut reader = quick_xml::Reader::from_str(&xml_data);
     loop {
@@ -189,6 +192,7 @@ fn main() {
                         let mut in_property_tag = false;
                         let mut in_n_tag = false;
                         let mut unit_ref_for_dim: Option<String> = None;
+                        let mut definition: Option<Definition> = None;
                         loop {
                             match reader.read_event() {
                                 Ok(Event::Empty(ref ve)) | Ok(Event::Start(ref ve)) => {
@@ -204,6 +208,14 @@ fn main() {
                                             .iter()
                                             .find(|a| a.key.as_ref() == b"Unit")
                                             .map(|a| String::from_utf8_lossy(&a.value));
+                                        if let (Some(u), Some(v)) = (&unit_attr, &val_num)
+                                            && let Ok(value) = v.parse::<f64>()
+                                        {
+                                            definition = Some(Definition {
+                                                value,
+                                                expr: u.to_string(),
+                                            });
+                                        }
                                         let mut f = 1.0f64;
                                         if let Some(u) = unit_attr {
                                             f *= parse_factor(&u);
@@ -302,6 +314,16 @@ fn main() {
                             special = "SpecialKind::LinearOffset".into();
                         }
 
+                        // Special units (temperature, logarithmic, ...) are not a plain
+                        // `value x Unit` product: they keep the values assigned above.
+                        let is_special = e
+                            .attributes()
+                            .filter_map(|a| a.ok())
+                            .any(|a| a.key.as_ref() == b"isSpecial" && a.value.as_ref() == b"yes");
+                        if !is_special && let Some(definition) = definition {
+                            definitions.insert(code.clone(), definition);
+                        }
+
                         // Check if this is an arbitrary unit
                         let is_arbitrary = e
                             .attributes()
@@ -350,530 +372,25 @@ fn main() {
 
     units.sort_by(|a, b| a.0.cmp(&b.0));
 
-    // Helper functions for dimension parsing
-    fn parse_unit_expression_dimensions(expr: &str) -> [i8; 7] {
-        // Remove numeric factors and constants like [pi] to focus on dimensional units
-        let mut cleaned = expr.to_string();
-
-        // Simple string-based cleaning without regex
-        // Remove numeric factors like "4.", "10*-7", "10^3", etc.
-        // But preserve digits that are part of unit symbols like "A2"
-        let mut result = String::new();
-        let mut chars = cleaned.chars().peekable();
-
-        while let Some(ch) = chars.next() {
-            match ch {
-                // Handle digits more carefully
-                '0'..='9' => {
-                    // Look ahead to see if this digit is part of a unit symbol
-                    // Check if preceded by a letter (like "A2")
-                    let preceded_by_letter = result
-                        .chars()
-                        .last()
-                        .is_some_and(|c| c.is_ascii_alphabetic());
-
-                    if preceded_by_letter {
-                        // This digit is part of a unit symbol, keep it
-                        result.push(ch);
-                    } else {
-                        // This is a numeric factor, skip it and following digits/decimals
-                        while let Some(&next_ch) = chars.peek() {
-                            if next_ch.is_ascii_digit() || next_ch == '.' {
-                                chars.next();
-                            } else {
-                                break;
-                            }
-                        }
-                        // Skip optional '*' or '^' after numbers
-                        if let Some(&next_ch) = chars.peek()
-                            && (next_ch == '*' || next_ch == '^')
-                        {
-                            chars.next();
-                            // Skip optional '-' after '^' or '*'
-                            if let Some(&minus_ch) = chars.peek()
-                                && minus_ch == '-'
-                            {
-                                chars.next();
-                            }
-                        }
-                    }
-                }
-                // Handle decimal points
-                '.' => {
-                    // Only skip if it's part of a numeric factor (not preceded by letter)
-                    let preceded_by_letter = result
-                        .chars()
-                        .last()
-                        .is_some_and(|c| c.is_ascii_alphabetic());
-                    if !preceded_by_letter {
-                        // Skip decimal point and following digits
-                        while let Some(&next_ch) = chars.peek() {
-                            if next_ch.is_ascii_digit() {
-                                chars.next();
-                            } else {
-                                break;
-                            }
-                        }
-                    } else {
-                        result.push(ch);
-                    }
-                }
-                // Remove constants like [pi], [e], etc.
-                '[' => {
-                    // Skip until closing bracket
-                    for bracket_ch in chars.by_ref() {
-                        if bracket_ch == ']' {
-                            break;
-                        }
-                    }
-                    // Skip optional dot after bracket
-                    if let Some(&dot_ch) = chars.peek()
-                        && dot_ch == '.'
-                    {
-                        chars.next();
-                    }
-                }
-                // Keep other characters
-                _ => result.push(ch),
-            }
-        }
-
-        // First replace double dots with single dots
-        cleaned = result.replace("..", ".");
-
-        // Now handle dots more carefully - we want to remove them as separators
-        // but preserve the structure of expressions like "N/A2"
-        let mut final_result = String::new();
-        let parts: Vec<&str> = cleaned.split('.').collect();
-
-        for part in parts {
-            final_result.push_str(part);
-        }
-
-        cleaned = final_result.trim().to_string();
-
-        // Now parse the remaining dimensional expression
-        if cleaned.is_empty() {
-            return [0i8; 7];
-        }
-
-        // Handle simple cases first
-        match cleaned.as_str() {
-            "N/A2" => [1, 1, -2, -2, 0, 0, 0], // Force per square ampere: kg⋅m⋅s⁻²⋅A⁻²
-            "g/m3" => [1, -3, 0, 0, 0, 0, 0],  // Mass per volume
-            "Pa" => [1, -1, -2, 0, 0, 0, 0],   // Pressure: kg⋅m⁻¹⋅s⁻²
-            "kPa" => [1, -1, -2, 0, 0, 0, 0],  // Pressure: kg⋅m⁻¹⋅s⁻²
-            "N" => [1, 1, -2, 0, 0, 0, 0],     // Force: kg⋅m⋅s⁻²
-            "J" => [1, 2, -2, 0, 0, 0, 0],     // Energy: kg⋅m²⋅s⁻²
-            "W" => [1, 2, -3, 0, 0, 0, 0],     // Power: kg⋅m²⋅s⁻³
-            "V" => [1, 2, -3, -1, 0, 0, 0],    // Voltage: kg⋅m²⋅s⁻³⋅A⁻¹
-            "F" => [-1, -2, 4, 2, 0, 0, 0],    // Capacitance: kg⁻¹⋅m⁻²⋅s⁴⋅A²
-            "Ohm" => [1, 2, -3, -2, 0, 0, 0],  // Resistance: kg⋅m²⋅s⁻³⋅A⁻²
-            "Ohm-1" => [-1, -2, 3, 2, 0, 0, 0], // Conductance: kg⁻¹⋅m⁻²⋅s³⋅A²
-            "S" => [-1, -2, 3, 2, 0, 0, 0],    // Conductance: kg⁻¹⋅m⁻²⋅s³⋅A²
-            "Wb" => [1, 2, -2, -1, 0, 0, 0],   // Magnetic flux: kg⋅m²⋅s⁻²⋅A⁻¹
-            "T" => [1, 0, -2, -1, 0, 0, 0],    // Magnetic field: kg⋅s⁻²⋅A⁻¹
-            "H" => [1, 2, -2, -2, 0, 0, 0],    // Inductance: kg⋅m²⋅s⁻²⋅A⁻²
-            "C" => [0, 0, 1, 1, 0, 0, 0],      // Electric charge: s⋅A
-            "m" => [0, 1, 0, 0, 0, 0, 0],      // Length
-            "m2" => [0, 2, 0, 0, 0, 0, 0],     // Area
-            "m3" => [0, 3, 0, 0, 0, 0, 0],     // Volume
-            "s" => [0, 0, 1, 0, 0, 0, 0],      // Time
-            "s-1" => [0, 0, -1, 0, 0, 0, 0],   // Frequency (1/time)
-            "Hz" => [0, 0, -1, 0, 0, 0, 0],    // Frequency (hertz)
-            "A" => [0, 0, 0, 1, 0, 0, 0],      // Current
-            "A2" => [0, 0, 0, 2, 0, 0, 0],     // Current squared
-            _ => {
-                // For more complex expressions, try basic parsing
-                if cleaned.contains('/') {
-                    let parts: Vec<&str> = cleaned.split('/').collect();
-                    if parts.len() == 2 {
-                        let num_dim = get_basic_unit_dimension(parts[0]);
-                        let den_dim = get_basic_unit_dimension(parts[1]);
-                        return subtract_dimensions(num_dim, den_dim);
-                    }
-                }
-                [0i8; 7] // Fallback to dimensionless
-            }
-        }
-    }
-
-    fn get_basic_unit_dimension(unit: &str) -> [i8; 7] {
-        match unit.trim() {
-            "N" => [1, 1, -2, 0, 0, 0, 0], // Force
-            "A" => [0, 0, 0, 1, 0, 0, 0],  // Current
-            "A2" => [0, 0, 0, 2, 0, 0, 0], // Current squared
-            "m" => [0, 1, 0, 0, 0, 0, 0],  // Length
-            "m2" => [0, 2, 0, 0, 0, 0, 0], // Area
-            "m3" => [0, 3, 0, 0, 0, 0, 0], // Volume
-            "g" => [1, 0, 0, 0, 0, 0, 0],  // Mass
-            "s" => [0, 0, 1, 0, 0, 0, 0],  // Time
-            "C" => [0, 0, 1, 1, 0, 0, 0],  // Charge
-            _ => {
-                // Check if this is a unit with a numeric suffix (like A2)
-                if unit.len() > 1 {
-                    let (base, suffix) = unit.split_at(1);
-                    if suffix.chars().all(|c| c.is_ascii_digit()) {
-                        if base == "A" {
-                            // Handle A with numeric suffix (A2, A3, etc.)
-                            if let Ok(power) = suffix.parse::<i8>() {
-                                return [0, 0, 0, power, 0, 0, 0]; // Current^power
-                            }
-                        } else if base == "m" {
-                            // Handle m with numeric suffix (m2, m3, etc.)
-                            if let Ok(power) = suffix.parse::<i8>() {
-                                return [0, power, 0, 0, 0, 0, 0]; // Length^power
-                            }
-                        }
-                    }
-                }
-                [0i8; 7]
-            }
-        }
-    }
-
-    fn subtract_dimensions(a: [i8; 7], b: [i8; 7]) -> [i8; 7] {
-        [
-            a[0] - b[0],
-            a[1] - b[1],
-            a[2] - b[2],
-            a[3] - b[3],
-            a[4] - b[4],
-            a[5] - b[5],
-            a[6] - b[6],
-        ]
-    }
-
-    // Second pass: resolve unit references and derive dimensions
-    // Create lookup maps for both dimensions and factors
-    let mut unit_dims: std::collections::HashMap<String, [i8; 7]> =
-        std::collections::HashMap::new();
-    let mut unit_factors: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
-    let mut original_factors: std::collections::HashMap<String, f64> =
-        std::collections::HashMap::new();
-
-    // First, collect all units with known dimensions and factors
-    for (code, dim, factor, _, _, _, _, _) in &units {
-        if *dim != [0i8; 7] {
-            unit_dims.insert(code.clone(), *dim);
-        }
-        unit_factors.insert(code.clone(), *factor);
-        original_factors.insert(code.clone(), *factor); // Store original XML factors
-    }
-
-    // Function to resolve unit factor recursively
-    fn resolve_unit_factor(
-        unit_ref: &str,
-        unit_factors: &std::collections::HashMap<String, f64>,
-    ) -> f64 {
-        // Handle simple numeric expressions first
-        if let Ok(n) = unit_ref.parse::<f64>() {
-            return n;
-        }
-
-        // Handle power-of-ten notation
-        if let Some(rest) = unit_ref.strip_prefix("10^")
-            && let Ok(exp) = rest.parse::<i32>()
-        {
-            return 10f64.powi(exp);
-        }
-        if let Some(rest) = unit_ref.strip_prefix("10*-")
-            && let Ok(exp) = rest.parse::<i32>()
-        {
-            return 10f64.powi(-exp);
-        }
-
-        // Handle division expressions like "m/3937"
-        if let Some((lhs, rhs)) = unit_ref.split_once('/') {
-            let l = resolve_unit_factor(lhs, unit_factors);
-            let r = resolve_unit_factor(rhs, unit_factors);
-            if r != 0.0 {
-                return l / r;
-            }
-        }
-
-        // Handle multiplication expressions like "kg.m"
-        if unit_ref.contains('.') {
-            let parts: Vec<&str> = unit_ref.split('.').collect();
-            let mut result = 1.0;
-            for part in parts {
-                let part_factor = resolve_unit_factor(part, unit_factors);
-                result *= part_factor;
-            }
-            return result;
-        }
-
-        // Handle unit references with exponents like "Ohm-1", "Ohm-2", etc.
-        if let Some(dash_pos) = unit_ref.rfind('-') {
-            let unit_part = &unit_ref[..dash_pos];
-            let exp_part = &unit_ref[dash_pos + 1..];
-
-            // Check if the exponent part is a valid integer
-            if let Ok(exponent) = exp_part.parse::<i32>() {
-                // Look up the base unit
-                if let Some(&base_factor) = unit_factors.get(unit_part) {
-                    // Apply the negative exponent: Unit-n means Unit^(-n)
-                    return base_factor.powi(-exponent);
-                }
-            }
-        }
-
-        // Look up unit reference
-        if let Some(&factor) = unit_factors.get(unit_ref) {
-            return factor;
-        }
-
-        // Handle prefixed units like "cm", "mm", etc.
-        // Check if it's a prefixed unit by trying to split it
-        for prefix_len in (1..unit_ref.len()).rev() {
-            let (prefix_part, unit_part) = unit_ref.split_at(prefix_len);
-
-            // Check if prefix_part is a known prefix
-            let prefix_factor = match prefix_part {
-                "c" => 0.01,           // centi
-                "m" => 0.001,          // milli
-                "k" => 1000.0,         // kilo
-                "d" => 0.1,            // deci
-                "da" => 10.0,          // deka
-                "h" => 100.0,          // hecto
-                "M" => 1000000.0,      // mega
-                "G" => 1000000000.0,   // giga
-                "μ" | "u" => 0.000001, // micro
-                "n" => 0.000000001,    // nano
-                "p" => 0.000000000001, // pico
-                _ => continue,
-            };
-
-            // Check if unit_part is a known unit
-            if let Some(&base_factor) = unit_factors.get(unit_part) {
-                return prefix_factor * base_factor;
-            }
-        }
-
-        // Special cases for constants and base units
-        match unit_ref {
-            "K" => 1.0,                     // Kelvin is canonical
-            "[c]" => 299792458.0,           // speed of light in m/s
-            "[pi]" => std::f64::consts::PI, // pi constant
-            "[e]" => 1.602176634e-19,       // elementary charge in C
-            "[h]" => 6.62607015e-34,        // Planck constant in J⋅s
-            "[k]" => 1.380649e-23,          // Boltzmann constant in J/K
-            "[g]" => 9.80665,               // standard acceleration of free fall in m/s²
-            "a_j" => 31557600.0,            // Julian year in seconds (365.25 * 24 * 3600)
-            "a_t" => 31556925.216,          // tropical year in seconds (365.24219 * 24 * 3600)
-            "a_g" => 31556952.0,            // Gregorian year in seconds (365.2425 * 24 * 3600)
-            _ => 1.0,                       // Fallback
-        }
-    }
-
-    // Now resolve unit factors that reference other units
-    // Do multiple passes until no more changes occur
-    let mut changed = true;
-    let mut pass = 0;
-    while changed && pass < 10 {
-        // Limit passes to avoid infinite loops
-        changed = false;
-        pass += 1;
-
-        #[allow(clippy::needless_range_loop)]
-        for i in 0..units.len() {
-            let (code, _, _, _, _, _, _, unit_ref) = {
-                let unit = &units[i];
-                (
-                    unit.0.clone(),
-                    unit.1,
-                    unit.2,
-                    unit.3,
-                    unit.4.clone(),
-                    unit.5.clone(),
-                    unit.6.clone(),
-                    unit.7.clone(),
-                )
-            };
-            if let Some(ref_unit) = unit_ref {
-                // Use the original XML factor, not the current resolved factor
-                let original_factor = original_factors.get(&code).copied().unwrap_or(1.0);
-                let resolved_factor = resolve_unit_factor(&ref_unit, &unit_factors);
-                let final_factor = if code == "[in_i]" {
-                    // Special case for [in_i] to ensure exact precision
-                    // 1 inch = 2.54 cm = 0.0254 m (exactly)
-                    0.0254
-                } else {
-                    original_factor * resolved_factor
-                };
-
-                // Only update if the resolved factor has changed from 1.0 (meaning we found a better resolution)
-                // and the final factor is different from the current
-                if resolved_factor != 1.0 && (final_factor - units[i].2).abs() > 1e-10 {
-                    units[i].2 = final_factor;
-                    unit_factors.insert(code, final_factor);
-                    changed = true;
-                }
-            }
-        }
-    }
-
-    // Now update units that need dimension derivation
-    #[allow(clippy::needless_range_loop)]
-    for i in 0..units.len() {
-        let unit_data = &units[i];
-        let needs_update = {
-            let (_, dim, _, _, _, _, _, unit_ref) = unit_data;
-            *dim == [0i8; 7] && unit_ref.is_some()
-        };
-
-        if needs_update {
-            let (code, _, _, _, _, _, _, unit_ref) = &units[i];
-            let ref_unit = unit_ref.as_ref().unwrap();
-            let code = code.clone();
-
-            // Look up the referenced unit's dimension
-            // First try property-based assignment for known properties - prioritize this over unit references
-            let property_dim = match units[i].5.as_str() {
-                "length" => [0, 1, 0, 0, 0, 0, 0],
-                "mass" => [1, 0, 0, 0, 0, 0, 0],
-                "time" => [0, 0, 1, 0, 0, 0, 0],
-                "electric current" => [0, 0, 0, 1, 0, 0, 0],
-                "thermodynamic temperature" => [0, 0, 0, 0, 1, 0, 0],
-                "amount of substance" => [0, 0, 0, 0, 0, 1, 0],
-                "luminous intensity" => [0, 0, 0, 0, 0, 0, 1],
-                "area" => [0, 2, 0, 0, 0, 0, 0],
-                "volume" => [0, 3, 0, 0, 0, 0, 0],
-                "velocity" => [0, 1, -1, 0, 0, 0, 0],
-                "acceleration" => [0, 1, -2, 0, 0, 0, 0],
-                "force" => [1, 1, -2, 0, 0, 0, 0],
-                "pressure" => [1, -1, -2, 0, 0, 0, 0],
-                "energy" => [1, 2, -2, 0, 0, 0, 0],
-                "power" => [1, 2, -3, 0, 0, 0, 0],
-                "electric charge" => [0, 0, 1, 1, 0, 0, 0],
-                "electric potential" => [1, 2, -3, -1, 0, 0, 0],
-                "electric capacitance" => [-1, -2, 4, 2, 0, 0, 0],
-                "electric resistance" => [1, 2, -3, -2, 0, 0, 0],
-                "electric conductance" => [-1, -2, 3, 2, 0, 0, 0],
-                "magnetic flux" => [1, 2, -2, -1, 0, 0, 0],
-                "magnetic flux density" => [1, 0, -2, -1, 0, 0, 0],
-                "inductance" => [1, 2, -2, -2, 0, 0, 0],
-                "magnetic permeability" => [1, 1, -2, -2, 0, 0, 0],
-                "luminous flux" => [0, 0, 0, 0, 0, 0, 1],
-                "illuminance" => [0, -2, 0, 0, 0, 0, 1],
-                "radioactivity" => [0, 0, -1, 0, 0, 0, 0],
-                "frequency" => [0, 0, -1, 0, 0, 0, 0],
-                "plane angle" => [0, 0, 0, 0, 0, 0, 0], // dimensionless
-                "solid angle" => [0, 0, 0, 0, 0, 0, 0], // dimensionless
-                _ => [0i8; 7],                          // unknown, will try other methods
-            };
-
-            let derived_dim = if property_dim != [0i8; 7] {
-                // Always use property-based dimension if available - this takes priority
-                property_dim
-            } else if let Some(&ref_dim) = unit_dims.get(ref_unit) {
-                if ref_dim != [0i8; 7] {
-                    ref_dim
-                } else {
-                    // Referenced unit is dimensionless, fallback to property-based assignment
-
-                    match units[i].5.as_str() {
-                        "length" => [0, 1, 0, 0, 0, 0, 0],
-                        "mass" => [1, 0, 0, 0, 0, 0, 0],
-                        "time" => [0, 0, 1, 0, 0, 0, 0],
-                        "electric current" => [0, 0, 0, 1, 0, 0, 0],
-                        "thermodynamic temperature" => [0, 0, 0, 0, 1, 0, 0],
-                        "amount of substance" => [0, 0, 0, 0, 0, 1, 0],
-                        "luminous intensity" => [0, 0, 0, 0, 0, 0, 1],
-                        "area" => [0, 2, 0, 0, 0, 0, 0],
-                        "volume" => [0, 3, 0, 0, 0, 0, 0],
-                        "velocity" => [0, 1, -1, 0, 0, 0, 0],
-                        "acceleration" => [0, 1, -2, 0, 0, 0, 0],
-                        "force" => [1, 1, -2, 0, 0, 0, 0],
-                        "pressure" => [1, -1, -2, 0, 0, 0, 0],
-                        "energy" => [1, 2, -2, 0, 0, 0, 0],
-                        "power" => [1, 2, -3, 0, 0, 0, 0],
-                        "electric charge" => [0, 0, 1, 1, 0, 0, 0],
-                        "electric potential" => [1, 2, -3, -1, 0, 0, 0],
-                        "electric capacitance" => [-1, -2, 4, 2, 0, 0, 0],
-                        "electric resistance" => [1, 2, -3, -2, 0, 0, 0],
-                        "electric conductance" => [-1, -2, 3, 2, 0, 0, 0],
-                        "magnetic flux" => [1, 2, -2, -1, 0, 0, 0],
-                        "magnetic flux density" => [1, 0, -2, -1, 0, 0, 0],
-                        "inductance" => [1, 2, -2, -2, 0, 0, 0],
-                        "magnetic permeability" => [1, 1, -2, -2, 0, 0, 0],
-                        "luminous flux" => [0, 0, 0, 0, 0, 0, 1],
-                        "illuminance" => [0, -2, 0, 0, 0, 0, 1],
-                        "radioactivity" => [0, 0, -1, 0, 0, 0, 0],
-                        "frequency" => [0, 0, -1, 0, 0, 0, 0],
-                        "plane angle" => [0, 0, 0, 0, 0, 0, 0], // dimensionless
-                        "solid angle" => [0, 0, 0, 0, 0, 0, 0], // dimensionless
-                        _ => [0i8; 7],                          // unknown, keep dimensionless
-                    }
-                }
-            } else {
-                // Try to parse complex unit expressions like "4.[pi].10*-7.N/A2"
-                let parsed_dim = parse_unit_expression_dimensions(ref_unit);
-                if parsed_dim != [0i8; 7] {
-                    parsed_dim
-                } else {
-                    // Handle common base units that might not be in our parsed list
-
-                    match ref_unit.as_str() {
-                        "m" => [0, 1, 0, 0, 0, 0, 0],                   // length
-                        "g" => [1, 0, 0, 0, 0, 0, 0],                   // mass
-                        "s" => [0, 0, 1, 0, 0, 0, 0],                   // time
-                        "A" => [0, 0, 0, 1, 0, 0, 0],                   // current
-                        "K" => [0, 0, 0, 0, 1, 0, 0],                   // temperature
-                        "mol" => [0, 0, 0, 0, 0, 1, 0],                 // amount
-                        "cd" => [0, 0, 0, 0, 0, 0, 1],                  // luminous intensity
-                        "cm" => [0, 1, 0, 0, 0, 0, 0],                  // length (centimeter)
-                        "mm" => [0, 1, 0, 0, 0, 0, 0],                  // length (millimeter)
-                        "km" => [0, 1, 0, 0, 0, 0, 0],                  // length (kilometer)
-                        "kPa" => [1, -1, -2, 0, 0, 0, 0],               // pressure
-                        "Ohm-1" => [-1, -2, 3, 2, 0, 0, 0],             // conductance
-                        "[c].a_j" => [0, 1, 0, 0, 0, 0, 0], // length (speed of light * time)
-                        "4.[pi].10*-7.N/A2" => [1, 1, -2, -2, 0, 0, 0], // magnetic permeability
-                        "[mu_0]" => [1, 1, -2, -2, 0, 0, 0], // magnetic permeability of vacuum
-                        _ => {
-                            // Try to infer dimension from property if available
-
-                            match units[i].5.as_str() {
-                                "length" => [0, 1, 0, 0, 0, 0, 0],
-                                "mass" => [1, 0, 0, 0, 0, 0, 0],
-                                "time" => [0, 0, 1, 0, 0, 0, 0],
-                                "electric current" => [0, 0, 0, 1, 0, 0, 0],
-                                "thermodynamic temperature" => [0, 0, 0, 0, 1, 0, 0],
-                                "amount of substance" => [0, 0, 0, 0, 0, 1, 0],
-                                "luminous intensity" => [0, 0, 0, 0, 0, 0, 1],
-                                "area" => [0, 2, 0, 0, 0, 0, 0],
-                                "volume" => [0, 3, 0, 0, 0, 0, 0],
-                                "velocity" => [0, 1, -1, 0, 0, 0, 0],
-                                "acceleration" => [0, 1, -2, 0, 0, 0, 0],
-                                "force" => [1, 1, -2, 0, 0, 0, 0],
-                                "pressure" => [1, -1, -2, 0, 0, 0, 0],
-                                "energy" => [1, 2, -2, 0, 0, 0, 0],
-                                "power" => [1, 2, -3, 0, 0, 0, 0],
-                                "electric charge" => [0, 0, 1, 1, 0, 0, 0],
-                                "electric potential" => [1, 2, -3, -1, 0, 0, 0],
-                                "electric capacitance" => [-1, -2, 4, 2, 0, 0, 0],
-                                "electric resistance" => [1, 2, -3, -2, 0, 0, 0],
-                                "electric conductance" => [-1, -2, 3, 2, 0, 0, 0],
-                                "magnetic flux" => [1, 2, -2, -1, 0, 0, 0],
-                                "magnetic flux density" => [1, 0, -2, -1, 0, 0, 0],
-                                "inductance" => [1, 2, -2, -2, 0, 0, 0],
-                                "magnetic permeability" => [1, 1, -2, -2, 0, 0, 0],
-                                "luminous flux" => [0, 0, 0, 0, 0, 0, 1],
-                                "illuminance" => [0, -2, 0, 0, 0, 0, 1],
-                                "radioactivity" => [0, 0, -1, 0, 0, 0, 0],
-                                "plane angle" => [0, 0, 0, 0, 0, 0, 0], // dimensionless
-                                "solid angle" => [0, 0, 0, 0, 0, 0, 0], // dimensionless
-                                _ => [0i8; 7], // unknown, keep dimensionless
-                            }
-                        }
-                    }
-                }
-            };
-
-            if derived_dim != [0i8; 7] {
-                units[i].1 = derived_dim;
-                unit_dims.insert(code, derived_dim); // Update the lookup map for future references
-            }
+    // Second pass: compute the factor and dimension of every regular unit by evaluating its
+    // definition. Base units and special units keep the values assigned above.
+    let prefix_factors: HashMap<String, f64> = prefixes
+        .iter()
+        .map(|(code, value, _, _)| (code.clone(), *value))
+        .collect();
+    let mut resolver = Resolver {
+        prefixes: &prefix_factors,
+        definitions: &definitions,
+        resolved: units
+            .iter()
+            .filter(|unit| !definitions.contains_key(&unit.0))
+            .map(|unit| (unit.0.clone(), (unit.2, unit.1)))
+            .collect(),
+        in_progress: Vec::new(),
+    };
+    for unit in units.iter_mut() {
+        if definitions.contains_key(&unit.0) {
+            (unit.2, unit.1) = resolver.unit(&unit.0);
         }
     }
 
@@ -911,7 +428,155 @@ fn main() {
     println!("cargo:rustc-env=UCUM_REGISTRY={}", dest.display());
 }
 
-/// Parse unit expression to extract dimensions from complex expressions like "4.[pi].10*-7.N/A2"
+/// Round a computed factor to 16 significant digits, which removes the binary noise that
+/// chained `f64` operations leave in the last place (`0.1 * 0.1 * 0.1` is not `0.001`).
+fn round_factor(factor: f64) -> f64 {
+    format!("{factor:.15e}").parse().unwrap_or(factor)
+}
+
+/// Definition of a regular unit in `ucum-essence.xml`: `value` times the `Unit` expression.
+struct Definition {
+    value: f64,
+    expr: String,
+}
+
+/// Factor to the base units and dimension vector of a unit or expression.
+type Quantity = (f64, [i8; 7]);
+
+/// Evaluates unit definitions, following references to other units.
+struct Resolver<'a> {
+    prefixes: &'a HashMap<String, f64>,
+    definitions: &'a HashMap<String, Definition>,
+    /// Units whose quantity is known. Seeded with the base units and the special units.
+    resolved: HashMap<String, Quantity>,
+    /// Units being resolved, to report a circular definition instead of recursing forever.
+    in_progress: Vec<String>,
+}
+
+impl Resolver<'_> {
+    /// Quantity of the unit `code`, which must be a unit of the specification.
+    fn unit(&mut self, code: &str) -> Quantity {
+        if let Some(quantity) = self.resolved.get(code) {
+            return *quantity;
+        }
+        assert!(
+            !self.in_progress.iter().any(|c| c == code),
+            "circular definition of unit `{code}`"
+        );
+        let definition = &self.definitions[code];
+
+        // The amount of substance has a dimension of its own in this crate, whereas UCUM
+        // defines the mole as the dimensionless number 6.02214076 x 10*23.
+        let quantity = if code == "mol" {
+            (definition.value, [0, 0, 0, 0, 0, 1, 0])
+        } else {
+            self.in_progress.push(code.to_string());
+            let (factor, dim) = self.expression(&definition.expr);
+            self.in_progress.pop();
+            (round_factor(definition.value * factor), dim)
+        };
+        self.resolved.insert(code.to_string(), quantity);
+        quantity
+    }
+
+    /// Quantity of a unit symbol with an optional prefix, e.g. `m`, `cm` or `m[Hg]`.
+    fn symbol(&mut self, symbol: &str) -> Quantity {
+        if self.resolved.contains_key(symbol) || self.definitions.contains_key(symbol) {
+            return self.unit(symbol);
+        }
+        for len in 1..symbol.len() {
+            let Some((prefix, code)) = symbol.split_at_checked(len) else {
+                continue;
+            };
+            if let Some(&prefix_factor) = self.prefixes.get(prefix)
+                && (self.resolved.contains_key(code) || self.definitions.contains_key(code))
+            {
+                let (factor, dim) = self.unit(code);
+                return (prefix_factor * factor, dim);
+            }
+        }
+        panic!("unknown unit `{symbol}` in a unit definition");
+    }
+
+    /// Quantity of a full unit expression such as `4.[pi].10*-7.N/A2`.
+    fn expression(&mut self, expr: &str) -> Quantity {
+        let mut pos = 0;
+        let quantity = self.term(expr, &mut pos);
+        assert!(pos == expr.len(), "cannot parse unit definition `{expr}`");
+        quantity
+    }
+
+    /// `term := ['/'] component (('.' | '/') component)*`, evaluated left to right.
+    fn term(&mut self, expr: &str, pos: &mut usize) -> Quantity {
+        let bytes = expr.as_bytes();
+        let mut acc: Quantity = (1.0, [0; 7]);
+        if bytes.get(*pos) != Some(&b'/') {
+            acc = self.component(expr, pos);
+        }
+        while let Some(&operator @ (b'.' | b'/')) = bytes.get(*pos) {
+            *pos += 1;
+            let (factor, dim) = self.component(expr, pos);
+            let sign: i8 = if operator == b'.' { 1 } else { -1 };
+            acc.0 *= factor.powi(sign.into());
+            for (acc_exp, exp) in acc.1.iter_mut().zip(dim) {
+                *acc_exp += sign * exp;
+            }
+        }
+        acc
+    }
+
+    /// `component := '(' term ')' | integer | symbol [exponent]`
+    fn component(&mut self, expr: &str, pos: &mut usize) -> Quantity {
+        let bytes = expr.as_bytes();
+        if bytes.get(*pos) == Some(&b'(') {
+            *pos += 1;
+            let quantity = self.term(expr, pos);
+            assert!(
+                bytes.get(*pos) == Some(&b')'),
+                "missing `)` in unit definition `{expr}`"
+            );
+            *pos += 1;
+            return quantity;
+        }
+
+        // A symbol runs up to the next operator; square brackets may contain any character
+        let start = *pos;
+        let mut in_brackets = false;
+        while let Some(&b) = bytes.get(*pos) {
+            match b {
+                b'[' => in_brackets = true,
+                b']' => in_brackets = false,
+                b'.' | b'/' | b'(' | b')' if !in_brackets => break,
+                _ => {}
+            }
+            *pos += 1;
+        }
+        let text = &expr[start..*pos];
+        assert!(
+            !text.is_empty(),
+            "empty component in unit definition `{expr}`"
+        );
+
+        if let Ok(number) = text.parse::<u32>() {
+            return (number.into(), [0; 7]);
+        }
+
+        // Split a trailing exponent: `cm2`, `s-1`, `[in_i]3`, `10*-7` (the unit `10*` to the -7)
+        let digits = text.len() - text.trim_end_matches(|c: char| c.is_ascii_digit()).len();
+        let mut symbol_end = text.len() - digits;
+        if digits > 0 && text[..symbol_end].ends_with(['+', '-']) {
+            symbol_end -= 1;
+        }
+        let (symbol, exponent) = match text[symbol_end..].parse::<i8>() {
+            Ok(exponent) if symbol_end > 0 => (&text[..symbol_end], exponent),
+            _ => (text, 1),
+        };
+
+        let (factor, dim) = self.symbol(symbol);
+        (factor.powi(exponent.into()), dim.map(|exp| exp * exponent))
+    }
+}
+
 /// Map UCUM dimension string (single letters combined) to Dimension vector.
 /// Parse a simple factor expression appearing in the `<value Unit="…">` attribute.
 ///
@@ -977,7 +642,7 @@ fn parse_dim(tag: &str) -> [i8; 7] {
             'I' => v[3] = 1,
             'C' | 'θ' | 'Θ' => v[4] = 1, // temperature
             'N' => v[5] = 1,
-            'J' => v[6] = 1,
+            'J' | 'F' => v[6] = 1, // luminous intensity (UCUM writes it `F`)
             'Q' => {
                 // Charge dimension: time × current
                 v[2] = 1; // time
