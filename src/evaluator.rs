@@ -331,11 +331,7 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
                                 result.factor =
                                     checked_mul(result.factor, checked_pow(res.factor, exp)?)?;
 
-                                // Combine dimensions
-                                for i in 0..result.dim.0.len() {
-                                    result.dim.0[i] = result.dim.0[i]
-                                        .saturating_add((res.dim.0[i] as f64 * exp as f64) as i8);
-                                }
+                                add_scaled_dim(&mut result.dim.0, res.dim, exp)?;
                             }
                             _ => {
                                 // For complex expressions, evaluate them normally
@@ -353,11 +349,7 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
                                 result.factor =
                                     checked_mul(result.factor, checked_pow(res.factor, exp)?)?;
 
-                                // Combine dimensions
-                                for i in 0..result.dim.0.len() {
-                                    result.dim.0[i] = result.dim.0[i]
-                                        .saturating_add((res.dim.0[i] as f64 * exp as f64) as i8);
-                                }
+                                add_scaled_dim(&mut result.dim.0, res.dim, exp)?;
                             }
                         }
                     }
@@ -408,11 +400,7 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
                     ));
                 }
                 factor_acc = checked_mul(factor_acc, checked_pow(res.factor, fac.exponent)?)?;
-                #[allow(clippy::needless_range_loop)]
-                for i in 0..7 {
-                    dim_acc[i] =
-                        dim_acc[i].saturating_add(res.dim.0[i].saturating_mul(fac.exponent as i8));
-                }
+                add_scaled_dim(&mut dim_acc, res.dim, fac.exponent)?;
             }
 
             // Second pass: handle special units if present
@@ -426,11 +414,7 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
                         // For arbitrary units, just add their dimension (typically zero)
                         // but don't modify the factor (it's already 1.0)
                         let dim = unit_record.dim;
-                        #[allow(clippy::needless_range_loop)]
-                        for i in 0..7 {
-                            dim_acc[i] = dim_acc[i]
-                                .saturating_add(dim.0[i].saturating_mul(fac.exponent as i8));
-                        }
+                        add_scaled_dim(&mut dim_acc, dim, fac.exponent)?;
                     } else if unit_record.special == crate::types::SpecialKind::TanTimes100 {
                         // Special handling for TanTimes100 (prism diopter)
                         // For [p'diop]: 100 * tan(1 rad)
@@ -461,12 +445,7 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
                             factor_acc = from_f64(math::tan(to_f64(numeric_val) / 100.0));
                         }
 
-                        // Apply dimensions
-                        #[allow(clippy::needless_range_loop)]
-                        for i in 0..7 {
-                            dim_acc[i] = dim_acc[i]
-                                .saturating_add(dim.0[i].saturating_mul(fac.exponent as i8));
-                        }
+                        add_scaled_dim(&mut dim_acc, dim, fac.exponent)?;
                     } else {
                         // For other special units, apply their ratio and dimension
                         let ratio = unit_record.special.ratio();
@@ -475,11 +454,7 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
                         // Apply special unit conversion
                         factor_acc =
                             checked_mul(factor_acc, checked_pow(from_f64(ratio), fac.exponent)?)?;
-                        #[allow(clippy::needless_range_loop)]
-                        for i in 0..7 {
-                            dim_acc[i] = dim_acc[i]
-                                .saturating_add(dim.0[i].saturating_mul(fac.exponent as i8));
-                        }
+                        add_scaled_dim(&mut dim_acc, dim, fac.exponent)?;
                     }
                 }
             }
@@ -516,13 +491,7 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
                                     checked_pow(from_f64(unit_record.factor), fac.exponent)?,
                                 )?;
 
-                                // Add dimensions
-                                #[allow(clippy::needless_range_loop)]
-                                for i in 0..7 {
-                                    dim_acc[i] = dim_acc[i].saturating_add(
-                                        unit_record.dim.0[i].saturating_mul(fac.exponent as i8),
-                                    );
-                                }
+                                add_scaled_dim(&mut dim_acc, unit_record.dim, fac.exponent)?;
                             } else if let Some((pref, rest)) = split_prefix(unit) {
                                 // Handle prefixed units
                                 if let Some(unit_record) = find_unit(rest) {
@@ -536,12 +505,7 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
                                         checked_pow(combined_factor, fac.exponent)?,
                                     )?;
 
-                                    #[allow(clippy::needless_range_loop)]
-                                    for i in 0..7 {
-                                        dim_acc[i] = dim_acc[i].saturating_add(
-                                            unit_record.dim.0[i].saturating_mul(fac.exponent as i8),
-                                        );
-                                    }
+                                    add_scaled_dim(&mut dim_acc, unit_record.dim, fac.exponent)?;
                                 }
                             }
                         }
@@ -550,12 +514,7 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
                             let res = evaluate(&fac.expr)?;
                             total_factor =
                                 checked_mul(total_factor, checked_pow(res.factor, fac.exponent)?)?;
-                            #[allow(clippy::needless_range_loop)]
-                            for i in 0..7 {
-                                dim_acc[i] = dim_acc[i].saturating_add(
-                                    res.dim.0[i].saturating_mul(fac.exponent as i8),
-                                );
-                            }
+                            add_scaled_dim(&mut dim_acc, res.dim, fac.exponent)?;
                         }
                     }
                 }
@@ -604,21 +563,14 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
                 false
             };
 
-            let mut dim_vec = [0i8; 7];
-            if is_arbitrary_numerator {
-                // For arbitrary units in numerator, use negated dimension of denominator
-                // This ensures arbitrary units correctly adopt the inverse dimensions of what they're divided by
-                #[allow(clippy::needless_range_loop)]
-                for i in 0..7 {
-                    dim_vec[i] = -d.dim.0[i];
-                }
+            // Arbitrary units in the numerator adopt the inverse dimension of the denominator;
+            // otherwise subtract the denominator dimension from the numerator dimension
+            let mut dim_vec = if is_arbitrary_numerator {
+                [0i8; 7]
             } else {
-                // Normal case: subtract denominator dimension from numerator dimension
-                #[allow(clippy::needless_range_loop)]
-                for i in 0..7 {
-                    dim_vec[i] = n.dim.0[i] - d.dim.0[i];
-                }
-            }
+                n.dim.0
+            };
+            add_scaled_dim(&mut dim_vec, d.dim, -1)?;
 
             Ok(EvalResult {
                 factor: checked_div(n.factor, d.factor)?,
@@ -636,10 +588,7 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
                 ));
             }
             let mut dim_vec = [0i8; 7];
-            #[allow(clippy::needless_range_loop)]
-            for i in 0..7 {
-                dim_vec[i] = base.dim.0[i].saturating_mul(*exp as i8);
-            }
+            add_scaled_dim(&mut dim_vec, base.dim, *exp)?;
             Ok(EvalResult {
                 factor: checked_pow(base.factor, *exp)?,
                 dim: Dimension(dim_vec),
@@ -647,6 +596,21 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
             })
         }
     }
+}
+
+/// Error returned when a dimension exponent does not fit the dimension vector.
+pub(crate) fn dimension_overflow() -> UcumError {
+    UcumError::precision_overflow("dimension", "exponent outside the range -128..=127")
+}
+
+/// Add `exponent` times `dim` to `acc`, reporting an exponent outside the `i8` range as an error.
+#[allow(clippy::result_large_err)]
+fn add_scaled_dim(acc: &mut [i8; 7], dim: Dimension, exponent: i32) -> Result<(), UcumError> {
+    *acc = Dimension(*acc)
+        .checked_add_scaled(dim, exponent)
+        .ok_or_else(dimension_overflow)?
+        .0;
+    Ok(())
 }
 
 /// Multiply two factors, reporting a result outside the `Decimal` range as an error.
