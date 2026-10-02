@@ -588,16 +588,18 @@ impl<'a> OptimizedParser<'a> {
         // Parse first factor
         match self.parse_factor()? {
             Some(f) => factors.push(f),
-            None => return Ok(UnitExpr::Numeric(1.0)), // Empty expression
+            None => return Err(UcumError::invalid_expression("Expected a unit")),
         }
 
         // Parse remaining factors
         loop {
             // Check for product separator (. or implicit)
             let next_pos = self.tokenizer.pos;
+            let mut explicit = false;
             match self.tokenizer.next_token() {
                 Some(Token::Operator('.')) => {
                     // Explicit product - continue parsing
+                    explicit = true;
                 }
                 Some(Token::Operator('/')) => {
                     // End of product - backtrack and stop
@@ -618,6 +620,9 @@ impl<'a> OptimizedParser<'a> {
             match self.parse_factor()? {
                 Some(f) => {
                     factors.push(f);
+                }
+                None if explicit => {
+                    return Err(UcumError::invalid_expression("Expected a unit after '.'"));
                 }
                 None => {
                     break;
@@ -645,7 +650,7 @@ impl<'a> OptimizedParser<'a> {
         Ok(match self.parse_factor()? {
             Some(factor) if factor.exponent == 1 => factor.expr,
             Some(factor) => UnitExpr::Power(Box::new(factor.expr), factor.exponent),
-            None => UnitExpr::Numeric(1.0),
+            None => return Err(UcumError::invalid_expression("Expected a unit after '/'")),
         })
     }
 
@@ -777,8 +782,10 @@ impl<'a> OptimizedParser<'a> {
         // Parse expression
         let expr = self.parse_expression()?;
 
-        // Ensure all input was consumed
-        if self.tokenizer.next_token().is_some() {
+        // Ensure all input was consumed. `next_token` returns `None` on a character that
+        // starts no token, so compare the position with the input length as well.
+        self.tokenizer.skip_whitespace();
+        if self.tokenizer.pos < self.tokenizer.input.len() {
             return Err(UcumError::invalid_expression(
                 "Unexpected characters at end of expression",
             ));
