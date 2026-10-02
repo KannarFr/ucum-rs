@@ -25,6 +25,7 @@ use crate::{
     precision::{Number, NumericOps, from_f64, to_f64},
     types::Dimension,
 };
+use rust_decimal::MathematicalOps;
 
 /// Helper to extract string from either Symbol or SymbolOwned variants
 fn extract_symbol_str<'a>(expr: &'a UnitExpr<'a>) -> Option<&'a str> {
@@ -122,7 +123,7 @@ impl EvalResult {
                 }
                 _ => {
                     // For regular units, apply prefix factor normally
-                    let factor = from_f64(pref.factor).mul(from_f64(unit.factor));
+                    let factor = checked_mul(from_f64(pref.factor), from_f64(unit.factor))?;
                     let dim = unit.dim;
                     return Ok(Self {
                         factor,
@@ -195,7 +196,7 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
                     return Err(UcumError::unit_not_found(code));
                 };
 
-                let scaled_val = from_f64(*v).mul(pref_factor);
+                let scaled_val = checked_mul(from_f64(*v), pref_factor)?;
                 // For special units, we need to handle them specially based on their type
                 // The numeric value is part of the special unit, not a multiplier
                 let (ratio, dim) = match unit.special {
@@ -279,8 +280,10 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
                         match &factor.expr {
                             UnitExpr::Numeric(n) => {
                                 // For numeric values, just multiply the factor
-                                result.factor =
-                                    result.factor.mul(from_f64(*n).pow(factor.exponent));
+                                result.factor = checked_mul(
+                                    result.factor,
+                                    checked_pow(from_f64(*n), factor.exponent)?,
+                                )?;
                             }
                             UnitExpr::Symbol(sym) => {
                                 let res = if *sym == code {
@@ -294,10 +297,13 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
                                     // For regular units, evaluate normally
                                     EvalResult::from_unit(sym)?
                                 };
-                                result.factor = result.factor.mul(from_f64(math::powf(
-                                    to_f64(res.factor),
-                                    factor.exponent as f64,
-                                )));
+                                result.factor = checked_mul(
+                                    result.factor,
+                                    from_f64(math::powf(
+                                        to_f64(res.factor),
+                                        factor.exponent as f64,
+                                    )),
+                                )?;
                             }
                             UnitExpr::SymbolOwned(sym) => {
                                 let res = if sym == code {
@@ -322,7 +328,8 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
 
                                 // Apply the exponent from the factor
                                 let exp = factor.exponent;
-                                result.factor = result.factor.mul(res.factor.pow(exp));
+                                result.factor =
+                                    checked_mul(result.factor, checked_pow(res.factor, exp)?)?;
 
                                 // Combine dimensions
                                 for i in 0..result.dim.0.len() {
@@ -343,7 +350,8 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
 
                                 // Apply the exponent from the factor
                                 let exp = factor.exponent;
-                                result.factor = result.factor.mul(res.factor.pow(exp));
+                                result.factor =
+                                    checked_mul(result.factor, checked_pow(res.factor, exp)?)?;
 
                                 // Combine dimensions
                                 for i in 0..result.dim.0.len() {
@@ -355,7 +363,7 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
                     }
 
                     // Apply the numeric factor to the final result
-                    result.factor = result.factor.mul(numeric_factor);
+                    result.factor = checked_mul(result.factor, numeric_factor)?;
                     return Ok(result);
                 } else {
                     // For special units, apply the ratio and dimension
@@ -399,7 +407,7 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
                         "offset units cannot participate in products",
                     ));
                 }
-                factor_acc = factor_acc.mul(res.factor.pow(fac.exponent));
+                factor_acc = checked_mul(factor_acc, checked_pow(res.factor, fac.exponent)?)?;
                 #[allow(clippy::needless_range_loop)]
                 for i in 0..7 {
                     dim_acc[i] =
@@ -465,7 +473,8 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
                         let dim = unit_record.dim;
 
                         // Apply special unit conversion
-                        factor_acc = factor_acc.mul(from_f64(ratio).pow(fac.exponent));
+                        factor_acc =
+                            checked_mul(factor_acc, checked_pow(from_f64(ratio), fac.exponent)?)?;
                         #[allow(clippy::needless_range_loop)]
                         for i in 0..7 {
                             dim_acc[i] = dim_acc[i]
@@ -485,20 +494,27 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
                     match &fac.expr {
                         UnitExpr::Numeric(n) => {
                             // Include ALL numeric factors in the multiplication
-                            total_factor = total_factor.mul(from_f64(*n).pow(fac.exponent));
+                            total_factor = checked_mul(
+                                total_factor,
+                                checked_pow(from_f64(*n), fac.exponent)?,
+                            )?;
                         }
                         UnitExpr::Symbol(unit) => {
                             if let Some(unit_record) = find_unit(unit) {
                                 // Multiply the factor from this unit
-                                total_factor = total_factor
-                                    .mul(from_f64(unit_record.factor).pow(fac.exponent));
+                                total_factor = checked_mul(
+                                    total_factor,
+                                    checked_pow(from_f64(unit_record.factor), fac.exponent)?,
+                                )?;
                             }
                         }
                         UnitExpr::SymbolOwned(unit) => {
                             if let Some(unit_record) = find_unit(unit) {
                                 // Multiply the factor from this unit
-                                total_factor = total_factor
-                                    .mul(from_f64(unit_record.factor).pow(fac.exponent));
+                                total_factor = checked_mul(
+                                    total_factor,
+                                    checked_pow(from_f64(unit_record.factor), fac.exponent)?,
+                                )?;
 
                                 // Add dimensions
                                 #[allow(clippy::needless_range_loop)]
@@ -511,10 +527,14 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
                                 // Handle prefixed units
                                 if let Some(unit_record) = find_unit(rest) {
                                     // Apply prefix factor and unit factor
-                                    let combined_factor =
-                                        from_f64(pref.factor).mul(from_f64(unit_record.factor));
-                                    total_factor =
-                                        total_factor.mul(combined_factor.pow(fac.exponent));
+                                    let combined_factor = checked_mul(
+                                        from_f64(pref.factor),
+                                        from_f64(unit_record.factor),
+                                    )?;
+                                    total_factor = checked_mul(
+                                        total_factor,
+                                        checked_pow(combined_factor, fac.exponent)?,
+                                    )?;
 
                                     #[allow(clippy::needless_range_loop)]
                                     for i in 0..7 {
@@ -528,7 +548,8 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
                         _ => {
                             // For other expressions, evaluate normally and multiply
                             let res = evaluate(&fac.expr)?;
-                            total_factor = total_factor.mul(res.factor.pow(fac.exponent));
+                            total_factor =
+                                checked_mul(total_factor, checked_pow(res.factor, fac.exponent)?)?;
                             #[allow(clippy::needless_range_loop)]
                             for i in 0..7 {
                                 dim_acc[i] = dim_acc[i].saturating_add(
@@ -599,12 +620,8 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
                 }
             }
 
-            if d.factor == Number::zero() {
-                return Err(UcumError::division_by_zero());
-            }
-
             Ok(EvalResult {
-                factor: n.factor.div(d.factor),
+                factor: checked_div(n.factor, d.factor)?,
                 dim: Dimension(dim_vec),
                 offset: Number::zero(),
             })
@@ -624,12 +641,39 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
                 dim_vec[i] = base.dim.0[i].saturating_mul(*exp as i8);
             }
             Ok(EvalResult {
-                factor: base.factor.pow(*exp),
+                factor: checked_pow(base.factor, *exp)?,
                 dim: Dimension(dim_vec),
                 offset: Number::zero(),
             })
         }
     }
+}
+
+/// Multiply two factors, reporting a result outside the `Decimal` range as an error.
+#[allow(clippy::result_large_err)]
+fn checked_mul(a: Number, b: Number) -> Result<Number, UcumError> {
+    a.checked_mul(b)
+        .ok_or_else(|| UcumError::precision_overflow("multiplication", &format!("{a} * {b}")))
+}
+
+/// Divide two factors, reporting a result outside the `Decimal` range as an error.
+#[allow(clippy::result_large_err)]
+fn checked_div(a: Number, b: Number) -> Result<Number, UcumError> {
+    if b.is_zero() {
+        return Err(UcumError::division_by_zero());
+    }
+    a.checked_div(b)
+        .ok_or_else(|| UcumError::precision_overflow("division", &format!("{a} / {b}")))
+}
+
+/// Raise a factor to an integer power, reporting a result outside the `Decimal` range as an error.
+#[allow(clippy::result_large_err)]
+fn checked_pow(base: Number, exp: i32) -> Result<Number, UcumError> {
+    if base.is_zero() && exp < 0 {
+        return Err(UcumError::division_by_zero());
+    }
+    base.checked_powi(exp.into())
+        .ok_or_else(|| UcumError::precision_overflow("exponentiation", &format!("{base}^{exp}")))
 }
 
 /// Attempt to split the leading prefix from a symbol.

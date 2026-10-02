@@ -42,7 +42,7 @@ fhir = ["std", "serde", "dep:thiserror"]
 [dependencies]
 # Core dependencies (all `no_std` + `alloc` compatible)
 serde = { version = "1.0", default-features = false, features = ["derive", "alloc"], optional = true }
-rust_decimal = { version = "1.36", default-features = false }
+rust_decimal = { version = "1.36", default-features = false, features = ["maths"] }
 phf = { version = "0.14", default-features = false, features = ["macros"] }
 smallvec = "1.13"
 hashbrown = { version = "0.17", default-features = false, features = ["default-hasher"] }
