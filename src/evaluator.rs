@@ -182,19 +182,8 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
                 )
                 && let UnitExpr::Numeric(ref v) = num_fac.expr
                 && let Some(code) = extract_symbol_str(&unit_fac.expr)
+                && let Some((pref_factor, unit)) = find_nonlinear_unit(code)
             {
-                let (pref_factor, unit) = if let Some((pref, rest)) = split_prefix(code) {
-                    if let Some(u) = find_unit(rest) {
-                        (from_f64(pref.factor), u)
-                    } else {
-                        return Err(UcumError::unit_not_found(code));
-                    }
-                } else if let Some(u) = find_unit(code) {
-                    (Number::one(), u)
-                } else {
-                    return Err(UcumError::unit_not_found(code));
-                };
-
                 let scaled_val = from_f64(*v).mul(pref_factor);
                 // For special units, we need to handle them specially based on their type
                 // The numeric value is part of the special unit, not a multiplier
@@ -487,46 +476,8 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
                             // Include ALL numeric factors in the multiplication
                             total_factor = total_factor.mul(from_f64(*n).pow(fac.exponent));
                         }
-                        UnitExpr::Symbol(unit) => {
-                            if let Some(unit_record) = find_unit(unit) {
-                                // Multiply the factor from this unit
-                                total_factor = total_factor
-                                    .mul(from_f64(unit_record.factor).pow(fac.exponent));
-                            }
-                        }
-                        UnitExpr::SymbolOwned(unit) => {
-                            if let Some(unit_record) = find_unit(unit) {
-                                // Multiply the factor from this unit
-                                total_factor = total_factor
-                                    .mul(from_f64(unit_record.factor).pow(fac.exponent));
-
-                                // Add dimensions
-                                #[allow(clippy::needless_range_loop)]
-                                for i in 0..7 {
-                                    dim_acc[i] = dim_acc[i].saturating_add(
-                                        unit_record.dim.0[i].saturating_mul(fac.exponent as i8),
-                                    );
-                                }
-                            } else if let Some((pref, rest)) = split_prefix(unit) {
-                                // Handle prefixed units
-                                if let Some(unit_record) = find_unit(rest) {
-                                    // Apply prefix factor and unit factor
-                                    let combined_factor =
-                                        from_f64(pref.factor).mul(from_f64(unit_record.factor));
-                                    total_factor =
-                                        total_factor.mul(combined_factor.pow(fac.exponent));
-
-                                    #[allow(clippy::needless_range_loop)]
-                                    for i in 0..7 {
-                                        dim_acc[i] = dim_acc[i].saturating_add(
-                                            unit_record.dim.0[i].saturating_mul(fac.exponent as i8),
-                                        );
-                                    }
-                                }
-                            }
-                        }
                         _ => {
-                            // For other expressions, evaluate normally and multiply
+                            // Units and nested expressions: evaluate normally and multiply
                             let res = evaluate(&fac.expr)?;
                             total_factor = total_factor.mul(res.factor.pow(fac.exponent));
                             #[allow(clippy::needless_range_loop)]
@@ -626,6 +577,24 @@ fn evaluate_impl(expr: &UnitExpr) -> Result<EvalResult, UcumError> {
             })
         }
     }
+}
+
+/// Resolve a symbol to a logarithmic or tangent unit (B, Np, `[p'diop]`, ...) and its prefix factor.
+///
+/// Returns `None` for every other unit, including unknown ones.
+fn find_nonlinear_unit(code: &str) -> Option<(Number, &'static crate::types::UnitRecord)> {
+    use crate::types::SpecialKind::{Ln, Log10, TanTimes100};
+
+    // Exact match first, so that e.g. "mol" is not read as milli + "ol"
+    let (pref_factor, unit) = match find_unit(code) {
+        Some(unit) if unit.code == code => (Number::one(), unit),
+        _ => {
+            let (pref, rest) = split_prefix(code)?;
+            (from_f64(pref.factor), find_unit(rest)?)
+        }
+    };
+
+    matches!(unit.special, Log10 | Ln | TanTimes100).then_some((pref_factor, unit))
 }
 
 /// Attempt to split the leading prefix from a symbol.
