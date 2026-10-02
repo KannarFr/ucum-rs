@@ -23,6 +23,16 @@ impl Dimension {
         Self([0; 7])
     }
 
+    /// `self + exponent * other`, or `None` if an exponent leaves the `i8` range.
+    pub(crate) fn checked_add_scaled(self, other: Dimension, exponent: i32) -> Option<Dimension> {
+        let mut result = self.0;
+        for (acc, exp) in result.iter_mut().zip(other.0) {
+            let scaled = i32::from(exp).checked_mul(exponent)?;
+            *acc = i8::try_from(i32::from(*acc).checked_add(scaled)?).ok()?;
+        }
+        Some(Dimension(result))
+    }
+
     /// Check if this dimension is dimensionless.
     pub const fn is_dimensionless(&self) -> bool {
         matches!(self.0, [0, 0, 0, 0, 0, 0, 0])
