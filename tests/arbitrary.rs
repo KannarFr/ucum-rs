@@ -53,8 +53,8 @@ fn arbitrary_unit_multiplication() {
     let iu_per_ml = eval("[IU]/mL").unwrap();
     // Should have dimension of 1/volume (L^-3)
     assert_eq!(iu_per_ml.dim, Dimension([0, -3, 0, 0, 0, 0, 0]));
-    // 1 / (0.001 L) = 1000
-    assert!((iu_per_ml.factor.sub(from_f64(1000.0))).abs() < from_f64(1e-12));
+    // 1 mL = 1e-6 m3, so 1 [IU]/mL = 1e6 [IU]/m3
+    assert!((iu_per_ml.factor.sub(from_f64(1e6))).abs() < from_f64(1e-6));
 }
 
 #[test]
