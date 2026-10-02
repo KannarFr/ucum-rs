@@ -145,6 +145,11 @@ impl EvalResult {
             });
         }
 
+        // A standalone annotation such as `{rbc}` is the unity (UCUM §6)
+        if code.starts_with('{') && code.ends_with('}') && code.is_ascii() {
+            return Ok(Self::numeric(1.0));
+        }
+
         Err(UcumError::unit_not_found(code))
     }
 }

@@ -224,18 +224,9 @@ impl<'a> Tokenizer<'a> {
     fn scan_symbol(&mut self) -> Option<Token<'a>> {
         let start = self.pos;
 
-        // Handle UTF-8 µ (micro sign) first
+        // Handle UTF-8 µ (micro sign) first, then scan the rest like any other symbol
         if self.current_byte() == Some(0xC2) && self.peek_byte(1) == Some(0xB5) {
             self.pos += 2;
-            // Continue scanning for more characters
-            while let Some(b) = self.current_byte() {
-                if is_symbol_char_fast(b) {
-                    self.pos += 1;
-                } else {
-                    break;
-                }
-            }
-            return Some(Token::Symbol(&self.input[start..self.pos]));
         }
 
         // Fast path for ASCII symbols
@@ -251,19 +242,18 @@ impl<'a> Tokenizer<'a> {
             let symbol = &self.input[start..self.pos];
 
             // Check for implicit exponent (e.g., "m2")
-            if let Some(exp_start) = symbol.rfind(|c: char| !c.is_ascii_digit()) {
-                let exp_start = exp_start + 1;
-                if exp_start < symbol.len()
-                    && let Ok(_exp) = symbol[exp_start..].parse::<i32>()
-                {
-                    // A minus sign right before the digits belongs to the exponent (e.g., "s-2")
-                    let base_end = match symbol[..exp_start].strip_suffix('-') {
-                        Some(base) if !base.is_empty() => base.len(),
-                        _ => exp_start,
-                    };
-                    self.pos = start + base_end;
-                    return Some(Token::Symbol(&symbol[..base_end]));
-                }
+            let exp_start = symbol.trim_end_matches(|c: char| c.is_ascii_digit()).len();
+            if exp_start > 0
+                && exp_start < symbol.len()
+                && let Ok(_exp) = symbol[exp_start..].parse::<i32>()
+            {
+                // A minus sign right before the digits belongs to the exponent (e.g., "s-2")
+                let base_end = match symbol[..exp_start].strip_suffix('-') {
+                    Some(base) if !base.is_empty() => base.len(),
+                    _ => exp_start,
+                };
+                self.pos = start + base_end;
+                return Some(Token::Symbol(&symbol[..base_end]));
             }
 
             Some(Token::Symbol(symbol))
@@ -366,6 +356,10 @@ impl<'a> Tokenizer<'a> {
             {
                 return Some(Token::TenPower(exp));
             }
+            if self.pos == exp_start {
+                // "10*" and "10^" without an exponent are the number ten
+                return Some(Token::TenPower(1));
+            }
         }
 
         None
@@ -412,7 +406,8 @@ impl<'a> Tokenizer<'a> {
         }
 
         match CHAR_CLASS[b as usize] {
-            CharClass::Letter | CharClass::OpenBracket => self.scan_symbol(),
+            // Units may start with a symbol character: `'` (minute of arc), `%`
+            CharClass::Letter | CharClass::OpenBracket | CharClass::Symbol => self.scan_symbol(),
             CharClass::Digit => {
                 // Check for 10* or 10^ patterns
                 if b == b'1'
@@ -738,7 +733,15 @@ impl<'a> OptimizedParser<'a> {
                 continue;
             }
 
-            if !in_annotation {
+            if in_annotation {
+                // Annotations may contain any ASCII character, but nothing else (UCUM §6)
+                if !ch.is_ascii() {
+                    return Err(UcumError::invalid_expression(&format!(
+                        "Invalid non-ASCII character '{}' at position {}",
+                        ch, pos
+                    )));
+                }
+            } else {
                 if ch.is_ascii() {
                     let ch_class = CHAR_CLASS[ch as u8 as usize];
                     if matches!(ch_class, CharClass::Invalid) && !ch.is_ascii_whitespace() {
