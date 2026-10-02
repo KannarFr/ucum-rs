@@ -643,40 +643,74 @@ impl<'a> OptimizedParser<'a> {
         }
     }
 
-    /// Parse a full expression with division
+    /// Parse the operand of a division: a single factor, as `.` and `/` have the same
+    /// precedence and associate to the left (UCUM §7.4).
+    #[allow(clippy::result_large_err)]
+    fn parse_divisor(&mut self) -> Result<UnitExpr<'a>, UcumError> {
+        Ok(match self.parse_factor()? {
+            Some(factor) if factor.exponent == 1 => factor.expr,
+            Some(factor) => UnitExpr::Power(Box::new(factor.expr), factor.exponent),
+            None => UnitExpr::Numeric(1.0),
+        })
+    }
+
+    /// Parse a full expression: products and divisions, evaluated from left to right.
+    ///
+    /// `a/b.c` is `(a/b).c`, not `a/(b.c)`.
     #[allow(clippy::result_large_err)]
     pub fn parse_expression(&mut self) -> Result<UnitExpr<'a>, UcumError> {
         // Check for leading division (e.g., "/min" should be "1/min")
         let saved_pos = self.tokenizer.pos;
-        match self.tokenizer.next_token() {
-            Some(Token::Operator('/')) => {
-                // Leading division - parse as 1/denominator
-                let denominator = self.parse_product()?;
-                return Ok(UnitExpr::Quotient(
-                    Box::new(UnitExpr::Numeric(1.0)),
-                    Box::new(denominator),
-                ));
-            }
+        let mut result = match self.tokenizer.next_token() {
+            Some(Token::Operator('/')) => UnitExpr::Quotient(
+                Box::new(UnitExpr::Numeric(1.0)),
+                Box::new(self.parse_divisor()?),
+            ),
             _ => {
                 // Not a leading division, backtrack
                 self.tokenizer.pos = saved_pos;
+                self.parse_product()?
             }
-        }
+        };
 
-        let mut result = self.parse_product()?;
-
-        // Handle division - check each token to see if it's division
         loop {
             let saved_pos = self.tokenizer.pos;
             match self.tokenizer.next_token() {
                 Some(Token::Operator('/')) => {
-                    let denominator = self.parse_product()?;
-                    result = UnitExpr::Quotient(Box::new(result), Box::new(denominator));
+                    let divisor = self.parse_divisor()?;
+                    result = UnitExpr::Quotient(Box::new(result), Box::new(divisor));
                 }
-                _ => {
-                    // Not a division operator, backtrack and stop
+                Some(Token::CloseParen) | None => {
+                    // End of expression, backtrack and stop
                     self.tokenizer.pos = saved_pos;
                     break;
+                }
+                token => {
+                    // A product after a division multiplies the whole term so far
+                    if token != Some(Token::Operator('.')) {
+                        // Implicit product, backtrack to the start of the factor
+                        self.tokenizer.pos = saved_pos;
+                    }
+                    let product_start = self.tokenizer.pos;
+                    let product = self.parse_product()?;
+                    if self.tokenizer.pos == product_start {
+                        // Nothing could be parsed, stop here
+                        self.tokenizer.pos = saved_pos;
+                        break;
+                    }
+                    let mut factors = vec![UnitFactor {
+                        expr: result,
+                        exponent: 1,
+                    }];
+                    match product {
+                        UnitExpr::Product(rest) => factors.extend(rest),
+                        UnitExpr::Power(expr, exponent) => factors.push(UnitFactor {
+                            expr: *expr,
+                            exponent,
+                        }),
+                        expr => factors.push(UnitFactor { expr, exponent: 1 }),
+                    }
+                    result = UnitExpr::Product(factors);
                 }
             }
         }
