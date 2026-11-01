@@ -24,11 +24,11 @@ pub enum FhirError {
     MissingField(&'static str),
 
     /// Invalid UCUM code.
-    #[error("Invalid UCUM code: {0}")]
+    #[error("Invalid UCUM code: {}", crate::error::excerpt(.0))]
     InvalidCode(String),
 
     /// Invalid system URI.
-    #[error("Invalid system URI: {0}")]
+    #[error("Invalid system URI: {}", crate::error::excerpt(.0))]
     InvalidSystem(String),
 }
 

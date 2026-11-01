@@ -224,15 +224,17 @@ impl SuggestionEngine {
             }
         }
 
-        // Common bracket errors
-        if invalid_unit.starts_with('[') && !invalid_unit.ends_with(']') {
+        // Common bracket and case errors, for a unit short enough to be one: the suggestion
+        // repeats it, and no unit code is that long
+        let short = crate::error::is_shown_whole(invalid_unit);
+        if short && invalid_unit.starts_with('[') && !invalid_unit.ends_with(']') {
             suggestions.push(format!("Missing closing bracket: '{invalid_unit}]'"));
-        } else if !invalid_unit.starts_with('[') && invalid_unit.ends_with(']') {
+        } else if short && !invalid_unit.starts_with('[') && invalid_unit.ends_with(']') {
             suggestions.push(format!("Missing opening bracket: '[{invalid_unit}'"));
         }
 
         // Common case errors
-        if invalid_unit.chars().all(|c| c.is_lowercase()) {
+        if short && invalid_unit.chars().all(|c| c.is_lowercase()) {
             // Try capitalizing first letter
             let mut chars: Vec<char> = invalid_unit.chars().collect();
             if let Some(first) = chars.get_mut(0) {

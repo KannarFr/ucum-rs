@@ -39,6 +39,7 @@ pub use crate::types::{Dimension, Prefix, Quantity, SpecialKind, UnitRecord};
 
 use crate::prelude::*;
 use crate::suggestions::SuggestionEngine;
+use alloc::borrow::Cow;
 use alloc::collections::BTreeSet;
 use hashbrown::HashSet;
 
@@ -108,12 +109,14 @@ pub fn validate_with_case(expression: &str, case: Case) -> Result<(), UcumError>
         } else {
             SUGGESTION_ENGINE.suggest_corrections(expression)
         };
-        e.with_suggestions(suggestions)
-            .with_context(format!("While parsing UCUM expression: '{expression}'"))
+        e.with_suggestions(suggestions).with_context(format!(
+            "While parsing UCUM expression: {}",
+            error::quoted(expression)
+        ))
     })?;
     evaluate_in(&parsed, case)
         .map(|_| ())
-        .map_err(|e| e.with_context(format!("In expression: '{expression}'")))
+        .map_err(|e| e.with_context(format!("In expression: {}", error::quoted(expression))))
 }
 
 /// Evaluate an expression, with corrections for a unit that is not in the tables. Only
@@ -432,13 +435,12 @@ fn check_arithmetic_operand(
 fn check_number(
     value: f64,
     is_zero_expected: bool,
-    operation: &str,
-    operands: impl Fn() -> String,
+    overflow: impl Fn() -> UcumError,
 ) -> Result<f64, UcumError> {
     if value.is_finite() && (value != 0.0 || is_zero_expected) {
         Ok(value)
     } else {
-        Err(UcumError::precision_overflow(operation, &operands()))
+        Err(overflow())
     }
 }
 
@@ -513,15 +515,32 @@ fn arithmetic(
     check_arithmetic_operand(unit1, &a, operation)?;
     check_arithmetic_operand(unit2, &b, operation)?;
     let operator = if exp == 1 { '*' } else { '/' };
-    let operands = || format!("{value1:?} {unit1} {operator} {value2:?} {unit2}");
+    // The kind keeps the units whole, the message shows each one shortened
+    let operands = |show: fn(&str) -> Cow<'_, str>| {
+        format!(
+            "{value1:?} {} {operator} {value2:?} {}",
+            show(unit1),
+            show(unit2)
+        )
+    };
+    let (whole, shown) = (error::whole, error::excerpt);
     // A scalar is a real number (UCUM §18.5)
     if !value1.is_finite() || !value2.is_finite() {
-        return Err(UcumError::non_finite_value(operation, &operands()));
+        return Err(UcumError::non_finite_value_showing(
+            operation,
+            &operands(whole),
+            &operands(shown),
+        ));
     }
     if exp == -1 && value2 == 0.0 {
-        return Err(UcumError::division_by_zero(operation, &operands()));
+        return Err(UcumError::division_by_zero_showing(
+            operation,
+            &operands(whole),
+            &operands(shown),
+        ));
     }
-    let overflow = || UcumError::precision_overflow(operation, &operands());
+    let overflow =
+        || UcumError::precision_overflow_showing(operation, &operands(whole), &operands(shown));
     let left = base_value(value1, a.factor).ok_or_else(overflow)?;
     let right = base_value(value2, b.factor).ok_or_else(overflow)?;
     let value = if exp == 1 {
@@ -535,7 +554,7 @@ fn arithmetic(
     let arbitrary = evaluator::combine(&a.arbitrary, &b.arbitrary, exp);
     let dim = Dimension(dim);
     Ok(UnitResult {
-        value: check_number(value.to_f64(), value.is_zero(), operation, operands)?,
+        value: check_number(value.to_f64(), value.is_zero(), overflow)?,
         unit: canonical_unit_string(&dim, &arbitrary),
         dimension: dim,
     })
