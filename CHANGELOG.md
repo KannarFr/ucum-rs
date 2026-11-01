@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- With the `serde` feature, `UcumError` and `ErrorKind` implement `Serialize`. An error is
+  a struct of five fields, which a service can return as the body of an HTTP error:
+  `code` (`ErrorKind::code()`), `message`, `suggestions`, `context`, and `details`, the
+  fields of the kind (which serializes as its fields alone).
+
 ## [0.9.1] - 2026-11-01
 
 ### Fixed
