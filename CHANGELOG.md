@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-01
+
 ### Changed
 
 - **Unit magnitudes as `Number` (breaking)**: the magnitudes of units are `Number`, as the
