@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-01
+
 ### Fixed
 
 - Error messages no longer repeat a long input whole: a 1 MB unknown unit gave a 1 MB
@@ -462,6 +464,8 @@ This represents the first major release of UCUM-RS, providing a complete, produc
 This release represents a major quality improvement, eliminating all warnings and test failures while enhancing the user experience and API consistency.
 
 ## [Unreleased]
+
+## [0.9.1] - 2026-11-01
 
 ## [0.7.0] - 2026-10-17
 
