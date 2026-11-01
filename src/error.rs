@@ -2,6 +2,38 @@
 
 use crate::prelude::*;
 use crate::types::Dimension;
+use alloc::borrow::Cow;
+
+/// Characters of an input that a message shows; the fields of the kind keep it whole.
+pub(crate) const MAX_SHOWN: usize = 64;
+
+/// Whether a message shows `text` whole
+pub(crate) fn is_shown_whole(text: &str) -> bool {
+    text.chars().nth(MAX_SHOWN).is_none()
+}
+
+/// `text` as a message shows it: whole up to `MAX_SHOWN` characters, otherwise its start and
+/// how long it is. An input of a megabyte would otherwise make a message of a megabyte.
+pub(crate) fn excerpt(text: &str) -> Cow<'_, str> {
+    match text.char_indices().nth(MAX_SHOWN) {
+        None => Cow::Borrowed(text),
+        Some((end, _)) => Cow::Owned(format!("{}... ({} bytes)", &text[..end], text.len())),
+    }
+}
+
+/// `text` unchanged, where a message would show `excerpt(text)`
+pub(crate) fn whole(text: &str) -> Cow<'_, str> {
+    Cow::Borrowed(text)
+}
+
+/// `text` in quotes as a message shows it; the size of a shortened one is outside the
+/// quotes, which only hold text of the input
+pub(crate) fn quoted(text: &str) -> String {
+    match text.char_indices().nth(MAX_SHOWN) {
+        None => format!("'{text}'"),
+        Some((end, _)) => format!("'{}...' ({} bytes)", &text[..end], text.len()),
+    }
+}
 
 /// Specific error kinds with detailed context.
 ///
@@ -150,6 +182,16 @@ impl UcumError {
 
     /// Create a dimension mismatch error: `found` where `expected` was needed
     pub fn dimension_mismatch(expected: Dimension, found: Dimension, operation: &str) -> Self {
+        Self::dimension_mismatch_showing(expected, found, operation, &excerpt(operation))
+    }
+
+    /// A dimension mismatch whose message shows the operation as `shown`
+    fn dimension_mismatch_showing(
+        expected: Dimension,
+        found: Dimension,
+        operation: &str,
+        shown: &str,
+    ) -> Self {
         Self::new(
             ErrorKind::DimensionMismatch {
                 expected,
@@ -158,7 +200,7 @@ impl UcumError {
                 from: None,
                 to: None,
             },
-            format!("Dimension mismatch in {operation}: expected {expected}, found {found}"),
+            format!("Dimension mismatch in {shown}: expected {expected}, found {found}"),
         )
     }
 
@@ -171,7 +213,8 @@ impl UcumError {
         found: Dimension,
     ) -> Self {
         let operation = format!("conversion from '{from}' to '{to}'");
-        let mut error = Self::dimension_mismatch(expected, found, &operation);
+        let shown = format!("conversion from {} to {}", quoted(from), quoted(to));
+        let mut error = Self::dimension_mismatch_showing(expected, found, &operation, &shown);
         if let ErrorKind::DimensionMismatch {
             from: from_unit,
             to: to_unit,
@@ -190,7 +233,7 @@ impl UcumError {
             ErrorKind::UnitNotFound {
                 unit: unit.to_string(),
             },
-            format!("Unknown unit: '{unit}'"),
+            format!("Unknown unit: {}", quoted(unit)),
         )
     }
 
@@ -202,52 +245,77 @@ impl UcumError {
                 to: to.to_string(),
                 reason: reason.to_string(),
             },
-            format!("Cannot convert from '{from}' to '{to}': {reason}"),
+            format!(
+                "Cannot convert from {} to {}: {reason}",
+                quoted(from),
+                quoted(to)
+            ),
         )
     }
 
     /// Create a precision overflow error
     pub fn precision_overflow(operation: &str, value: &str) -> Self {
+        Self::precision_overflow_showing(operation, value, &excerpt(value))
+    }
+
+    /// A precision overflow whose message shows the value as `shown`
+    pub(crate) fn precision_overflow_showing(operation: &str, value: &str, shown: &str) -> Self {
         Self::new(
             ErrorKind::PrecisionOverflow {
                 operation: operation.to_string(),
                 value: value.to_string(),
             },
-            format!("Precision overflow during {operation}: {value}"),
+            format!("Precision overflow during {operation}: {shown}"),
         )
     }
 
     /// Create a division by zero error
     pub fn division_by_zero(operation: &str, value: &str) -> Self {
+        Self::division_by_zero_showing(operation, value, &excerpt(value))
+    }
+
+    /// A division by zero whose message shows the value as `shown`
+    pub(crate) fn division_by_zero_showing(operation: &str, value: &str, shown: &str) -> Self {
         Self::new(
             ErrorKind::DivisionByZero {
                 operation: operation.to_string(),
                 value: value.to_string(),
             },
-            format!("Division by zero during {operation}: {value}"),
+            format!("Division by zero during {operation}: {shown}"),
         )
     }
 
     /// Create an error for an operand that is infinite or NaN
     pub fn non_finite_value(operation: &str, value: &str) -> Self {
+        Self::non_finite_value_showing(operation, value, &excerpt(value))
+    }
+
+    /// A non-finite value error whose message shows the value as `shown`
+    pub(crate) fn non_finite_value_showing(operation: &str, value: &str, shown: &str) -> Self {
         Self::new(
             ErrorKind::NonFiniteValue {
                 operation: operation.to_string(),
                 value: value.to_string(),
             },
-            format!("Operand of {operation} is not a finite number (UCUM §18.5): {value}"),
+            format!("Operand of {operation} is not a finite number (UCUM §18.5): {shown}"),
         )
     }
 
     /// Create an error for a value outside the domain of the function of a special unit
     pub fn out_of_domain(unit: &str, value: &str) -> Self {
+        Self::out_of_domain_showing(unit, value, &excerpt(value))
+    }
+
+    /// An out of domain error whose message shows the value as `shown`
+    pub(crate) fn out_of_domain_showing(unit: &str, value: &str, shown: &str) -> Self {
         Self::new(
             ErrorKind::OutOfDomain {
                 unit: unit.to_string(),
                 value: value.to_string(),
             },
             format!(
-                "{value} is outside the domain of the function of the special unit '{unit}' (UCUM §21.2)"
+                "{shown} is outside the domain of the function of the special unit {} (UCUM §21.2)",
+                quoted(unit)
             ),
         )
     }
@@ -306,7 +374,7 @@ impl UcumError {
             ErrorKind::InvalidProperty {
                 property: property.to_string(),
             },
-            format!("Invalid property: '{property}'"),
+            format!("Invalid property: {}", quoted(property)),
         )
     }
 
@@ -317,7 +385,7 @@ impl UcumError {
                 unit: unit.to_string(),
                 reason: reason.to_string(),
             },
-            format!("Special unit error for '{unit}': {reason}"),
+            format!("Special unit error for {}: {reason}", quoted(unit)),
         )
     }
 }

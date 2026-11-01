@@ -223,7 +223,7 @@ pub fn get_unit_info(code: &str) -> Result<JsValue, JsValue> {
         }
         None => {
             let js_error = create_simple_js_error(
-                format!("Unit '{}' not found", code),
+                UcumError::unit_not_found(code).message,
                 "NotFound".to_string(),
                 "unit_not_found",
             );

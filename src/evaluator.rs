@@ -3,11 +3,12 @@
 //! the conversion of a measurement between two commensurable terms.
 
 use crate::ast::UnitExpr;
-use crate::error::UcumError;
+use crate::error::{UcumError, excerpt, whole};
 use crate::number::Number;
 use crate::prelude::*;
 use crate::registry;
 use crate::types::{Dimension, Prefix, SpecialKind, UnitRecord};
+use alloc::borrow::Cow;
 
 /// How symbols are matched against the tables (UCUM §3.4).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -435,18 +436,29 @@ pub(crate) fn convert_value(
     to: &str,
     to_eval: &EvalResult,
 ) -> Result<f64, UcumError> {
-    let operands = || format!("{value:?} {from} to {to}");
+    // The kind keeps the units whole, the message shows each one shortened
+    let operands =
+        |show: fn(&str) -> Cow<'_, str>| format!("{value:?} {} to {}", show(from), show(to));
     // A measurement value is a real number (UCUM §18.5); a function would also map an
     // infinite value to a finite one: 10^-∞ is 0
     if !value.is_finite() {
-        return Err(UcumError::non_finite_value("conversion", &operands()));
+        return Err(UcumError::non_finite_value_showing(
+            "conversion",
+            &operands(whole),
+            &operands(excerpt),
+        ));
     }
-    let overflow = || UcumError::precision_overflow("conversion", &operands());
+    let overflow = || {
+        UcumError::precision_overflow_showing("conversion", &operands(whole), &operands(excerpt))
+    };
     let exact = |result: Option<Number>| {
         let result = result.ok_or_else(overflow)?;
         fits(result.to_f64(), result.is_zero()).ok_or_else(overflow)
     };
-    let out_of_domain = |unit: &str| UcumError::out_of_domain(unit, &format!("{value:?} {from}"));
+    let out_of_domain = |unit: &str| {
+        let shown = format!("{value:?} {}", excerpt(from));
+        UcumError::out_of_domain_showing(unit, &format!("{value:?} {from}"), &shown)
+    };
     if let (Some(a), Some(b)) = (affine(from_eval), affine(to_eval)) {
         return exact(Number::from_f64(value).and_then(|v| affine_value(v, a, b)));
     }

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Error messages no longer repeat a long input whole: a 1 MB unknown unit gave a 1 MB
+  `message`, and `validate` a 2 MB `Display` with its context line. Messages and context
+  show the first 64 characters of each input and its size (`'xxx...' (1000000 bytes)`);
+  the fields of the kind (`unit`, `expression`, `from`, `to`, `operation`, `value`...)
+  keep it whole. The suggestions for a missing bracket or a capital letter are only made
+  for a unit of up to 64 characters. The same holds for the FHIR error `InvalidSystem` and
+  the WASM `get_unit_info`.
+
 ## [0.9.0] - 2026-11-01
 
 ### Changed
