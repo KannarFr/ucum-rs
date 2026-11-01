@@ -118,7 +118,7 @@ disagree are listed in the README ("Specification conformance").
   - `cli`: Command-line interface binary
   - `fhir`: FHIR Quantity data type integration
   - `serde`: Serialization support
-- **octofhir-ucum-wasm** (`wasm/`): WebAssembly bindings, published to npm as `@octofhir/ucum-wasm` (not on crates.io)
+- **octofhir-ucum-wasm** (`wasm/`): WebAssembly bindings, built with wasm-pack; not published (neither crates.io nor npm)
 
 ### Important Implementation Notes
 

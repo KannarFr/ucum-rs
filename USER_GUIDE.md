@@ -163,7 +163,7 @@ cargo install octofhir-ucum --features cli
 
 ## WebAssembly
 
-The npm package `@octofhir/ucum-wasm` exports `validate`, `analyze`, `get_canonical`,
+The WebAssembly bindings (`wasm/`, built with wasm-pack) export `validate`, `analyze`, `get_canonical`,
 `get_unit_info`, `search`, `list_units`, `comparable`, `convert`, `multiply_units` and
 `divide_units`. Errors are thrown as `{ message, error_type, code, expression, position,
 suggestions, context }` objects: `code` is `ErrorKind::code()`, `position` the offset of a

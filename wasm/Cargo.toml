@@ -6,7 +6,7 @@ authors = ["OctoFHIR Team <funyloony@gmail.com>"]
 license = "Apache-2.0"
 repository = "https://github.com/octofhir/ucum-rs"
 readme = "../README.md"
-description = "WebAssembly bindings for octofhir-ucum, published to npm as @octofhir/ucum-wasm"
+description = "WebAssembly bindings for octofhir-ucum, built with wasm-pack (not published)"
 publish = false
 
 [lib]

@@ -2,7 +2,6 @@
 
 [![CI](https://github.com/octofhir/ucum-rs/workflows/CI/badge.svg)](https://github.com/octofhir/ucum-rs/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/octofhir-ucum.svg)](https://crates.io/crates/octofhir-ucum)
-[![npm](https://img.shields.io/npm/v/@octofhir/ucum-wasm.svg)](https://www.npmjs.com/package/@octofhir/ucum-wasm)
 [![Docs.rs](https://docs.rs/octofhir-ucum/badge.svg)](https://docs.rs/octofhir-ucum)
 
 An implementation of the [Unified Code for Units of Measure](https://ucum.org/) (UCUM) in
@@ -112,12 +111,15 @@ octofhir-ucum -i validate PAL      # case insensitive codes
 
 ### JavaScript/TypeScript (WASM)
 
+The WebAssembly bindings are not published to npm; build them from this repository with
+[wasm-pack](https://rustwasm.github.io/wasm-pack/):
+
 ```sh
-npm install @octofhir/ucum-wasm
+wasm-pack build wasm --target web --out-dir ../pkg --out-name octofhir_ucum
 ```
 
 ```typescript
-import { start, validate, convert, analyze, comparable } from '@octofhir/ucum-wasm';
+import { start, validate, convert, analyze, comparable } from './pkg/octofhir_ucum.js';
 
 start();
 
@@ -127,7 +129,7 @@ comparable('Cel', '[degF]');          // true
 analyze('[pH]').special;              // "PH"
 ```
 
-The package also exports `get_canonical`, `get_unit_info`, `search`, `list_units`,
+The bindings also export `get_canonical`, `get_unit_info`, `search`, `list_units`,
 `multiply_units` and `divide_units`.
 
 ## Usage
@@ -241,7 +243,7 @@ ucum-rs/
 │   ├── number.rs           # Exact decimal numbers of any magnitude
 │   ├── bin/cli.rs          # Command-line interface
 │   └── fhir.rs             # FHIR Quantity integration
-├── wasm/                   # WebAssembly bindings (npm: @octofhir/ucum-wasm)
+├── wasm/                   # WebAssembly bindings (built with wasm-pack, not published)
 ├── playground/             # Interactive web playground
 ├── spec/                   # UCUM specification text and grammar
 └── tests/official/         # Official UCUM functional tests

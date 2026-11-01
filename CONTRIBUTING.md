@@ -233,7 +233,7 @@ Releases are managed by project maintainers. The process includes:
 2. Update [CHANGELOG.md](CHANGELOG.md) with release notes
 3. Run `just publish-prep` to validate all quality checks
 4. Create GitHub release with tag
-5. Publish to crates.io and npm (for WASM package)
+5. Pushing the `v*` tag runs the release workflow, which publishes the crate to crates.io (the WASM bindings are not published)
 
 ## Code of Conduct
 
